@@ -111,7 +111,7 @@ def get_deliverability_status(syntax, domain_exists, mailbox_exists, disposable,
     if mailbox_exists:
         if free:
             if catch_all:
-                return "Deliverable", "Catch-all + free email"
+                return "Risky", "Catch-all + free email"
             return "Deliverable", "Free email provider"
         if catch_all:
             return "Risky", "Catch-all enabled"
@@ -142,6 +142,8 @@ def validate_email_address(email):
 
     return {
         "Email": email,
+        "Deliverability": deliverability,
+        "Notes/Issues": notes,
         "Syntax Valid": syntax,
         "Domain Valid": domain_exists,
         "Mailbox Exists": mailbox_exists,
@@ -149,9 +151,8 @@ def validate_email_address(email):
         "Free Email": free,
         "Catch-All Domain": catch_all,
         "MX Record": domain_exists,
-        "SPF Record": spf_exists,
-        "Deliverability": deliverability,
-        "Notes/Issues": notes
+        "SPF Record": spf_exists
+
     }
 
 def format_time(seconds):
@@ -237,4 +238,5 @@ if st.session_state.get("ready"):
         file_name="validated_results.csv",
         mime="text/csv"
     )
+
 
