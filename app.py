@@ -111,7 +111,7 @@ def get_deliverability_status(syntax, domain_exists, mailbox_exists, disposable,
     if mailbox_exists:
         if free:
             if catch_all:
-                return "Risky", "Catch-all + free email"
+                return "Deliverable", "Catch-all + free email"
             return "Deliverable", "Free email provider"
         if catch_all:
             return "Risky", "Catch-all enabled"
@@ -237,3 +237,4 @@ if st.session_state.get("ready"):
         file_name="validated_results.csv",
         mime="text/csv"
     )
+
