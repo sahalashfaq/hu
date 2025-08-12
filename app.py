@@ -35,7 +35,14 @@ def fetch_disposable_domains():
 DISPOSABLE_DOMAINS = fetch_disposable_domains()
 FREE_EMAIL_DOMAINS = ["gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "aol.com"]
 
-# New validation functions
+# Validation functions
+def validate_syntax(email):
+    try:
+        validate_email(email)
+        return True
+    except EmailNotValidError:
+        return False
+
 def check_mx_records(domain):
     try:
         mx_records = dns.resolver.resolve(domain, 'MX')
@@ -120,11 +127,6 @@ def get_deliverability_status(syntax, domain_exists, mailbox_exists, disposable,
             return "Risky", "No SPF means spam risk"
         return "Deliverable", "Mailbox unconfirmed but MX/SPF suggest acceptance"
 
-# Async validation function
-async def validate_async(email):
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, lambda: validate_email_address(email))
-
 def validate_email_address(email):
     syntax = validate_syntax(email)
     domain_exists, spf_exists, mx_records = validate_domain(email)
@@ -135,7 +137,7 @@ def validate_email_address(email):
     
     deliverability, notes = get_deliverability_status(
         syntax, domain_exists, mailbox_exists, disposable, free, catch_all, 
-        domain_exists, spf_exists  # domain_exists is same as mx_exists in our case
+        domain_exists, spf_exists
     )
 
     return {
@@ -146,7 +148,7 @@ def validate_email_address(email):
         "Disposable Email": disposable,
         "Free Email": free,
         "Catch-All Domain": catch_all,
-        "MX Record": domain_exists,  # Same as domain_exists in our implementation
+        "MX Record": domain_exists,
         "SPF Record": spf_exists,
         "Deliverability": deliverability,
         "Notes/Issues": notes
@@ -155,13 +157,12 @@ def validate_email_address(email):
 def format_time(seconds):
     return str(timedelta(seconds=int(seconds)))
 
-# CSV Processor with column selection
-async def process_csv(file, email_column):
-    file.seek(0)  # reset pointer
+def process_csv_sync(file, email_column):
+    file.seek(0)
     df = pd.read_csv(file)
     if email_column not in df.columns:
         st.error(f"CSV file must have the '{email_column}' column.")
-        return
+        return None
 
     emails = df[email_column].dropna().unique()
     total = len(emails)
@@ -174,7 +175,7 @@ async def process_csv(file, email_column):
     result = []
 
     for i, email in enumerate(emails):
-        result.append(await validate_async(email))
+        result.append(validate_email_address(email))
 
         if result[-1]['Deliverability'] == "Deliverable":
             valid_count += 1
@@ -187,6 +188,7 @@ async def process_csv(file, email_column):
         speed = (i + 1) / elapsed if elapsed > 0 else 0
         remaining = total - (i + 1)
         est_time = remaining / speed if speed > 0 else 0
+        
         status_box.markdown(f"""
         **Progress:** {i+1}/{total}  
         Valid: {valid_count}  
@@ -205,22 +207,24 @@ async def process_csv(file, email_column):
     buffer = io.StringIO()
     full.to_csv(buffer, index=False)
     buffer.seek(0)
-    st.session_state.output_csv = buffer.getvalue()
-    st.session_state.ready = True
+    return buffer.getvalue()
 
 # File upload and column selection
 uploaded = st.file_uploader("Upload CSV", type=["csv"])
 
 if uploaded:
-    uploaded.seek(0)  # reset pointer before preview
+    uploaded.seek(0)
     try:
         df_preview = pd.read_csv(uploaded, nrows=5)
         email_column = st.selectbox("Select the Email Column", options=df_preview.columns)
 
         if st.button("Start Validation"):
             with st.spinner("Processing... Please wait"):
-                uploaded.seek(0)  # reset pointer for full read
-                asyncio.run(process_csv(uploaded, email_column))
+                uploaded.seek(0)
+                output_csv = process_csv_sync(uploaded, email_column)
+                if output_csv:
+                    st.session_state.output_csv = output_csv
+                    st.session_state.ready = True
     except pd.errors.EmptyDataError:
         st.error("The uploaded CSV file is empty or invalid.")
 
