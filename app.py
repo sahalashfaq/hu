@@ -8,6 +8,8 @@ import asyncio
 import time
 from email_validator import validate_email, EmailNotValidError
 import io
+import dns.exception
+from datetime import timedelta
 
 st.set_page_config(page_title="Email Validator Pro", layout="centered")
 
@@ -21,7 +23,7 @@ def load_css():
 
 load_css()
 
-st.write("Valdate Your Extracted Emails")
+st.write("Validate Your Extracted Emails")
 
 # Disposable domain loader
 @st.cache_data
@@ -33,21 +35,29 @@ def fetch_disposable_domains():
 DISPOSABLE_DOMAINS = fetch_disposable_domains()
 FREE_EMAIL_DOMAINS = ["gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "aol.com"]
 
-# Validation functions
-def validate_syntax(email):
+# New validation functions
+def check_mx_records(domain):
     try:
-        validate_email(email)
-        return True
-    except EmailNotValidError:
+        mx_records = dns.resolver.resolve(domain, 'MX')
+        return True, [str(mx.exchange) for mx in mx_records]
+    except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.exception.DNSException):
+        return False, []
+
+def check_spf_record(domain):
+    try:
+        answers = dns.resolver.resolve(domain, 'TXT')
+        for rdata in answers:
+            if "v=spf1" in str(rdata):
+                return True
+        return False
+    except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.exception.DNSException):
         return False
 
 def validate_domain(email):
     domain = email.split('@')[-1]
-    try:
-        dns.resolver.resolve(domain, 'MX')
-        return True
-    except:
-        return False
+    mx_exists, mx_records = check_mx_records(domain)
+    spf_exists = check_spf_record(domain)
+    return mx_exists, spf_exists, mx_records
 
 def validate_mailbox(email):
     domain = email.split('@')[-1]
@@ -81,14 +91,34 @@ def is_catch_all(email):
     except:
         return False
 
-def get_status(syntax, domain, mailbox, catch_all):
-    if not syntax or not domain:
-        return "Not Deliverable"
-    if mailbox and catch_all:
-        return "Risky"
-    if mailbox:
-        return "Deliverable"
-    return "Not Deliverable"
+def get_deliverability_status(syntax, domain_exists, mailbox_exists, disposable, free, catch_all, mx_exists, spf_exists):
+    if not syntax:
+        return "Not Deliverable", "Invalid syntax"
+    if not domain_exists:
+        return "Not Deliverable", "Domain doesn't exist"
+    if disposable:
+        return "Not Deliverable", "Disposable domain"
+    if not mx_exists:
+        return "Not Deliverable", "No MX records"
+    
+    if mailbox_exists:
+        if free:
+            if catch_all:
+                return "Risky", "Catch-all + free email"
+            return "Deliverable", "Free email provider"
+        if catch_all:
+            return "Risky", "Catch-all enabled"
+        if not spf_exists:
+            return "Risky", "Missing SPF, may be flagged"
+        return "Deliverable", "--"
+    else:
+        if catch_all:
+            return "Risky", "Catch-all + mailbox unknown"
+        if free:
+            return "Deliverable", "Free provider, mailbox unverified but likely valid"
+        if not spf_exists:
+            return "Risky", "No SPF means spam risk"
+        return "Deliverable", "Mailbox unconfirmed but MX/SPF suggest acceptance"
 
 # Async validation function
 async def validate_async(email):
@@ -97,29 +127,33 @@ async def validate_async(email):
 
 def validate_email_address(email):
     syntax = validate_syntax(email)
-    if not syntax:
-        return {"Email": email, "Deliverability": "Not Deliverable"}
-
-    domain = validate_domain(email)
-    if not domain:
-        return {"Email": email, "Deliverability": "Not Deliverable"}
-
-    mailbox = validate_mailbox(email)
+    domain_exists, spf_exists, mx_records = validate_domain(email)
+    mailbox_exists = validate_mailbox(email) if domain_exists else False
     disposable = is_disposable(email)
     free = is_free_email(email)
-    catch_all = is_catch_all(email)
-    status = get_status(syntax, domain, mailbox, catch_all)
+    catch_all = is_catch_all(email) if domain_exists else False
+    
+    deliverability, notes = get_deliverability_status(
+        syntax, domain_exists, mailbox_exists, disposable, free, catch_all, 
+        domain_exists, spf_exists  # domain_exists is same as mx_exists in our case
+    )
 
     return {
         "Email": email,
         "Syntax Valid": syntax,
-        "Domain Valid": domain,
-        "Mailbox Exists": mailbox,
+        "Domain Valid": domain_exists,
+        "Mailbox Exists": mailbox_exists,
         "Disposable Email": disposable,
         "Free Email": free,
         "Catch-All Domain": catch_all,
-        "Deliverability": status
+        "MX Record": domain_exists,  # Same as domain_exists in our implementation
+        "SPF Record": spf_exists,
+        "Deliverability": deliverability,
+        "Notes/Issues": notes
     }
+
+def format_time(seconds):
+    return str(timedelta(seconds=int(seconds)))
 
 # CSV Processor with column selection
 async def process_csv(file, email_column):
@@ -131,7 +165,7 @@ async def process_csv(file, email_column):
 
     emails = df[email_column].dropna().unique()
     total = len(emails)
-    valid_count, invalid_count = 0, 0
+    valid_count, invalid_count, risky_count = 0, 0, 0
     start_time = time.time()
 
     st.info(f"Total Emails to Process: {total}")
@@ -144,20 +178,23 @@ async def process_csv(file, email_column):
 
         if result[-1]['Deliverability'] == "Deliverable":
             valid_count += 1
+        elif result[-1]['Deliverability'] == "Risky":
+            risky_count += 1
         else:
             invalid_count += 1
 
         elapsed = time.time() - start_time
         speed = (i + 1) / elapsed if elapsed > 0 else 0
         remaining = total - (i + 1)
-        est_time = int(remaining / speed) if speed > 0 else 0
+        est_time = remaining / speed if speed > 0 else 0
         status_box.markdown(f"""
         **Progress:** {i+1}/{total}  
         Valid: {valid_count}  
+        Risky: {risky_count}  
         Invalid: {invalid_count}  
         Remaining: {remaining}  
         Speed: {speed:.2f} emails/sec  
-        Estimated Time Left: {est_time} sec
+        Estimated Time Left: {format_time(est_time)}
         """)
 
         progress.progress((i + 1) / total)
