@@ -1,11 +1,11 @@
 import streamlit as st
 import pandas as pd
-import re
 import dns.resolver
 import smtplib
 import requests
-import asyncio
 import time
+import random
+import string
 from email_validator import validate_email, EmailNotValidError
 import io
 import dns.exception
@@ -13,26 +13,55 @@ from datetime import timedelta
 
 st.set_page_config(page_title="Email Validator Pro", layout="centered")
 
-# Load CSS
 def load_css():
     try:
         with open("style.css") as f:
             st.markdown(f'<style>{f.read()}</style>', unsafe_allow_html=True)
     except:
-        st.warning("No CSS loaded.")
+        pass
 
 load_css()
-# Disposable domain loader
-@st.cache_data
+
+st.markdown("<p class='h1 h'>Email <span>Validator</span></p>", unsafe_allow_html=True)
+
+# ==================== CONFIG ====================
+
+@st.cache_data(ttl=86400)
 def fetch_disposable_domains():
     url = "https://raw.githubusercontent.com/disposable-email-domains/disposable-email-domains/main/disposable_email_blocklist.conf"
-    r = requests.get(url)
-    return r.text.splitlines() if r.status_code == 200 else []
-st.markdown("<p class='h1 h'>Email <span>Validator</span></p>",unsafe_allow_html=True)
-DISPOSABLE_DOMAINS = fetch_disposable_domains()
-FREE_EMAIL_DOMAINS = ["gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "aol.com"]
+    try:
+        r = requests.get(url, timeout=15)
+        if r.status_code == 200:
+            return {line.strip().lower() for line in r.text.splitlines() if line.strip() and not line.startswith('#')}
+    except:
+        st.warning("Failed to fetch latest disposable list.")
+    return set()
 
-# Validation functions
+DISPOSABLE_DOMAINS = fetch_disposable_domains()
+
+# Significantly expanded extra disposable / temporary domains (2026 popular ones)
+EXTRA_DISPOSABLE = {
+    "tempmail.org", "tempmail.net", "throwawaymail.com", "guerrillamailblock.com",
+    "disposable-mail.com", "sharklasers.com", "trashmail.com", "10minutemail.com",
+    "maildrop.cc", "tempemail.cc", "getnada.com", "mohmal.com", "dispostable.com",
+    "emailondeck.com", "fakeinbox.com", "grr.la", "mailnesia.com", "tempinbox.com",
+    "tempail.com", "throwaway.email", "mailinator2.com", "binkmail.com", "bobmail.info",
+    "chammy.info", "devnullmail.com", "letthemeatspam.com", "reallymymail.com",
+    "reconmail.com", "safetymail.info", "sendspamhere.com", "sogetthis.com",
+    "spambooger.com", "spamherelots.com", "spamhereplease.com", "20minutemail.com",
+    "30minutemail.com", "mail.lukasstorck.com", "pro.anonymail.co", "shootstack.net",
+    "kriscop.online", "tsaur.com", "furusato.dev", "0-mail.com", "0815.ru", "0clickemail.com",
+    "0wnd.net", "0wnd.org", "1fsdfdsfsdf.tk", "1pad.de", "2fdgdfgdfgdf.tk"
+}
+
+FREE_EMAIL_DOMAINS = {
+    "gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "aol.com", "icloud.com",
+    "protonmail.com", "proton.me", "zoho.com", "yandex.com", "mail.com", "gmx.com",
+    "live.com", "msn.com", "comcast.net", "verizon.net", "tutanota.com", "tuta.com"
+}
+
+# ==================== VALIDATION FUNCTIONS ====================
+
 def validate_syntax(email):
     try:
         validate_email(email)
@@ -43,98 +72,103 @@ def validate_syntax(email):
 def check_mx_records(domain):
     try:
         mx_records = dns.resolver.resolve(domain, 'MX')
-        return True, [str(mx.exchange) for mx in mx_records]
-    except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.exception.DNSException):
+        return True, [str(mx.exchange).rstrip('.') for mx in mx_records]
+    except:
         return False, []
 
 def check_spf_record(domain):
     try:
         answers = dns.resolver.resolve(domain, 'TXT')
         for rdata in answers:
-            if "v=spf1" in str(rdata):
+            if "v=spf1" in str(rdata).lower():
                 return True
         return False
-    except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.exception.DNSException):
+    except:
         return False
 
-def validate_domain(email):
-    domain = email.split('@')[-1]
-    mx_exists, mx_records = check_mx_records(domain)
-    spf_exists = check_spf_record(domain)
-    return mx_exists, spf_exists, mx_records
+def is_disposable(email):
+    domain = email.split('@')[-1].lower()
+    return domain in DISPOSABLE_DOMAINS or domain in EXTRA_DISPOSABLE
 
-def validate_mailbox(email):
-    domain = email.split('@')[-1]
+def is_free_email(email):
+    domain = email.split('@')[-1].lower()
+    return domain in FREE_EMAIL_DOMAINS
+
+def is_catch_all(domain):
+    domain = domain.lower()
+    if domain in FREE_EMAIL_DOMAINS:
+        return False
     try:
         mx_records = dns.resolver.resolve(domain, 'MX')
-        mx_record = str(mx_records[0].exchange)
-        with smtplib.SMTP(mx_record, timeout=5) as server:
-            server.helo("example.com")
+        mx = str(mx_records[0].exchange).rstrip('.')
+        random_str = ''.join(random.choices(string.ascii_lowercase + string.digits, k=24))
+        test_email = f"test{random_str}@{domain}"
+        
+        with smtplib.SMTP(mx, timeout=8) as server:
+            server.helo("validator.pro")
+            server.mail("test@example.com")
+            code, _ = server.rcpt(test_email)
+            return code == 250
+    except:
+        return False
+
+def validate_mailbox(email):
+    try:
+        domain = email.split('@')[-1].lower()
+        mx_records = dns.resolver.resolve(domain, 'MX')
+        mx = str(mx_records[0].exchange).rstrip('.')
+        with smtplib.SMTP(mx, timeout=8) as server:
+            server.helo("validator.pro")
             server.mail("test@example.com")
             code, _ = server.rcpt(email)
             return code == 250
     except:
         return False
 
-def is_disposable(email):
-    return email.split('@')[-1] in DISPOSABLE_DOMAINS
-
-def is_free_email(email):
-    return email.split('@')[-1] in FREE_EMAIL_DOMAINS
-
-def is_catch_all(email):
-    domain = email.split('@')[-1]
-    try:
-        mx_records = dns.resolver.resolve(domain, 'MX')
-        mx = str(mx_records[0].exchange)
-        with smtplib.SMTP(mx, timeout=5) as server:
-            server.helo("example.com")
-            server.mail("test@example.com")
-            code, _ = server.rcpt(f"randomaddress1234@{domain}")
-            return code == 250
-    except:
-        return False
-
-def get_deliverability_status(syntax, domain_exists, mailbox_exists, disposable, free, catch_all, mx_exists, spf_exists):
+def get_deliverability_status(syntax, domain_exists, mailbox_exists, disposable, free, catch_all, spf_exists):
     if not syntax:
         return "Not Deliverable", "Invalid syntax"
     if not domain_exists:
         return "Not Deliverable", "Domain doesn't exist"
     if disposable:
         return "Not Deliverable", "Disposable domain"
-    if not mx_exists:
-        return "Not Deliverable", "No MX records"
     
+    if free:
+        if mailbox_exists:
+            return "Deliverable", "Free email provider - mailbox confirmed"
+        return "Deliverable", "Free email provider - mailbox unverified"
+
+    # Non-free domains
     if mailbox_exists:
-        if free:
-            if catch_all:
-                return "Risky", "Catch-all + free email"
-            return "Deliverable", "Free email provider"
         if catch_all:
             return "Risky", "Catch-all enabled"
         if not spf_exists:
-            return "Risky", "Missing SPF, may be flagged"
-        return "Deliverable", "--"
+            return "Risky", "Missing SPF"
+        return "Deliverable", "Mailbox exists"
     else:
         if catch_all:
-            return "Risky", "Catch-all + mailbox unknown"
-        if free:
-            return "Deliverable", "Free provider, mailbox unverified but likely valid"
+            return "Risky", "Catch-all domain"
         if not spf_exists:
-            return "Risky", "No SPF means spam risk"
-        return "Deliverable", "Mailbox unconfirmed but MX/SPF suggest acceptance"
+            return "Risky", "No SPF - higher risk"
+        return "Deliverable", "Mailbox unconfirmed (MX/SPF OK)"
 
 def validate_email_address(email):
     syntax = validate_syntax(email)
-    domain_exists, spf_exists, mx_records = validate_domain(email)
-    mailbox_exists = validate_mailbox(email) if domain_exists else False
-    disposable = is_disposable(email)
-    free = is_free_email(email)
-    catch_all = is_catch_all(email) if domain_exists else False
-    
+    domain = email.split('@')[-1].lower() if '@' in email else ""
+
+    mx_exists = False
+    spf_exists = False
+    if syntax and domain:
+        mx_exists, _ = check_mx_records(domain)
+        spf_exists = check_spf_record(domain)
+
+    mailbox_exists = validate_mailbox(email) if syntax and mx_exists else False
+    disposable = is_disposable(email) if syntax else False
+    free = is_free_email(email) if syntax else False
+    catch_all = is_catch_all(domain) if syntax and mx_exists and not free and not disposable else False
+
     deliverability, notes = get_deliverability_status(
-        syntax, domain_exists, mailbox_exists, disposable, free, catch_all, 
-        domain_exists, spf_exists
+        syntax, mx_exists, mailbox_exists, disposable, free, catch_all, spf_exists
     )
 
     return {
@@ -142,133 +176,152 @@ def validate_email_address(email):
         "Deliverability": deliverability,
         "Notes/Issues": notes,
         "Syntax Valid": syntax,
-        "Domain Valid": domain_exists,
+        "Domain Valid": mx_exists,
         "Mailbox Exists": mailbox_exists,
         "Disposable Email": disposable,
         "Free Email": free,
         "Catch-All Domain": catch_all,
-        "MX Record": domain_exists,
         "SPF Record": spf_exists
-
     }
 
 def format_time(seconds):
     return str(timedelta(seconds=int(seconds)))
 
-def process_csv_sync(file, email_column):
+# ==================== LIVE PROCESSING WITH COLOR CODING ====================
+
+def process_csv_with_live_output(file, email_column):
     file.seek(0)
     df = pd.read_csv(file)
-    if email_column not in df.columns:
-        st.error(f"CSV file must have the '{email_column}' column.")
-        return None
 
-    # Collect unique individual emails by splitting on ' * '
+    if email_column not in df.columns:
+        st.error(f"Column '{email_column}' not found!")
+        return None, None
+
     unique_emails = set()
     for cell in df[email_column].dropna():
         parts = [p.strip() for p in str(cell).split(' * ') if p.strip()]
-        for p in parts:
-            unique_emails.add(p)
+        unique_emails.update(parts)
 
     total = len(unique_emails)
-    valid_count, invalid_count, risky_count = 0, 0, 0
+    final_results = []
+    valid = risky = invalid = 0
     start_time = time.time()
 
-    st.info(f"Total Unique Emails to Process: {total}")
-    progress = st.progress(0)
-    status_box = st.empty()
-    result = []
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    live_table = st.empty()
 
-    emails_list = list(unique_emails)
-    for i, email in enumerate(emails_list):
-        result.append(validate_email_address(email))
+    for i, email in enumerate(unique_emails):
+        result = validate_email_address(email)
+        final_results.append(result)
 
-        if result[-1]['Deliverability'] == "Deliverable":
-            valid_count += 1
-        elif result[-1]['Deliverability'] == "Risky":
-            risky_count += 1
+        if result['Deliverability'] == "Deliverable":
+            valid += 1
+        elif result['Deliverability'] == "Risky":
+            risky += 1
         else:
-            invalid_count += 1
+            invalid += 1
 
         elapsed = time.time() - start_time
         speed = (i + 1) / elapsed if elapsed > 0 else 0
         remaining = total - (i + 1)
-        est_time = remaining / speed if speed > 0 else 0
-        
-        status_box.markdown(f"""
+        est = remaining / speed if speed > 0 else 0
+
+        status_text.markdown(f"""
         **Progress:** {i+1}/{total}  
-        Valid: {valid_count}  
-        Risky: {risky_count}  
-        Invalid: {invalid_count}  
-        Remaining: {remaining}  
-        Speed: {speed:.2f} emails/sec  
-        Estimated Time Left: {format_time(est_time)}
+        Deliverable: **{valid}**   
+        Risky: **{risky}**   
+        Not Deliverable: **{invalid}**  
+        Speed: **{speed:.1f}** emails/sec | ETA: **{format_time(est)}**
         """)
 
-        progress.progress((i + 1) / total)
+        progress_bar.progress((i + 1) / total)
 
-    # Create a dict for quick lookup
-    validation_results = {r['Email']: r for r in result}
+        # Color-coded live table
+        live_df = pd.DataFrame(final_results)
+        styled_df = live_df.style.apply(
+            lambda x: [
+                'background-color: #d4edda; color: #155724' if val == 'Deliverable' else
+                'background-color: #fff3cd; color: #856404' if val == 'Risky' else
+                'background-color: #f8d7da; color: #721c24' 
+                for val in x
+            ] if x.name == 'Deliverability' else [''] * len(x),
+            axis=1
+        )
+        live_table.dataframe(styled_df, use_container_width=True, height=650)
 
-    # Add columns to df for primary and secondary
+    # Merge results back to original df
+    val_dict = {r['Email']: r for r in final_results}
+
     for prefix in ['Primary', 'Secondary']:
         df[f'{prefix}_Email'] = ''
-        for key in validation_results.get(next(iter(validation_results)), {}).keys():
-            if key != 'Email':
-                df[f'{prefix}_{key}'] = ''
+        for key in ['Deliverability', 'Notes/Issues', 'Syntax Valid', 'Domain Valid',
+                    'Mailbox Exists', 'Disposable Email', 'Free Email', 
+                    'Catch-All Domain', 'SPF Record']:
+            df[f'{prefix}_{key}'] = ''
 
-    # Populate the columns
     for index, row in df.iterrows():
         cell = row[email_column]
         if pd.isna(cell):
             continue
         parts = [p.strip() for p in str(cell).split(' * ') if p.strip()]
-        primary = parts[0] if len(parts) > 0 else ''
+        primary = parts[0] if parts else ''
         secondary = parts[1] if len(parts) > 1 else ''
 
-        if primary:
-            prim_res = validation_results.get(primary, {})
+        if primary in val_dict:
+            prim = val_dict[primary]
             df.loc[index, 'Primary_Email'] = primary
-            for key, val in prim_res.items():
-                if key != 'Email':
-                    df.loc[index, f'Primary_{key}'] = val
+            for k, v in prim.items():
+                if k != 'Email':
+                    df.loc[index, f'Primary_{k}'] = v
 
-        if secondary:
-            sec_res = validation_results.get(secondary, {})
+        if secondary in val_dict:
+            sec = val_dict[secondary]
             df.loc[index, 'Secondary_Email'] = secondary
-            for key, val in sec_res.items():
-                if key != 'Email':
-                    df.loc[index, f'Secondary_{key}'] = val
+            for k, v in sec.items():
+                if k != 'Email':
+                    df.loc[index, f'Secondary_{k}'] = v
 
     buffer = io.StringIO()
     df.to_csv(buffer, index=False)
     buffer.seek(0)
-    return buffer.getvalue()
 
-# File upload and column selection
-uploaded = st.file_uploader("Upload CSV", type=["csv"])
+    return buffer.getvalue(), pd.DataFrame(final_results)
+
+# ==================== UI ====================
+
+uploaded = st.file_uploader("Choose your CSV file", type=["csv"], 
+                           help="Multiple emails per cell can be separated by ' * '")
 
 if uploaded:
-    uploaded.seek(0)
     try:
-        df_preview = pd.read_csv(uploaded, nrows=5)
-        email_column = st.selectbox("Select the Email Column", options=df_preview.columns)
+        uploaded.seek(0)
+        preview = pd.read_csv(uploaded, nrows=10)
+        st.dataframe(preview, use_container_width=True)
 
-        if st.button("Start Validation"):
-            with st.spinner("Processing... Please wait"):
+        email_column = st.selectbox("Select Email Column", preview.columns.tolist())
+
+        if st.button("Start Validation", type="primary"):
+            with st.spinner("Processing..."):
                 uploaded.seek(0)
-                output_csv = process_csv_sync(uploaded, email_column)
+                output_csv, live_df = process_csv_with_live_output(uploaded, email_column)
+
                 if output_csv:
                     st.session_state.output_csv = output_csv
                     st.session_state.ready = True
-    except pd.errors.EmptyDataError:
-        st.error("The uploaded CSV file is empty or invalid.")
+                    st.success("Validation Completed!")
 
-# Download button after processing
-if st.session_state.get("ready"):
-    st.success("Processing Complete!")
-    st.download_button(
-        "Download Results CSV",
-        st.session_state.output_csv,
+    except Exception as e:
+        st.error(f"Error: {str(e)}")
+
+# Download button with reset
+if st.session_state.get("ready", False):
+    if st.download_button(
+        "Download Full Results CSV",
+        data=st.session_state.output_csv,
         file_name="validated_results.csv",
-        mime="text/csv"
-    )
+        mime="text/csv",
+        type="primary"
+    ):
+        st.session_state.ready = False
+        st.rerun()
